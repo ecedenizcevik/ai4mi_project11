@@ -6,13 +6,14 @@ import shutil
 import glob
 from scipy.ndimage import distance_transform_edt
 
-base_data_dir = "data/segthor_part1/train"
-cleaned_data_dir = "data/segthor_part1_cleaned/train"
+base_data_dir = "data/segthor_train/train"
+cleaned_data_dir = "data/segthor_train_cleaned/train"
 
 
 os.makedirs(cleaned_data_dir, exist_ok=True)
 
 patient_dirs = sorted(glob.glob(os.path.join(base_data_dir, "Patient_*")))
+print(f"Found {len(patient_dirs)} patients in {base_data_dir}", flush=True)
 
 # Merged green segment is Segment_1
 merged_label_id = 1 
