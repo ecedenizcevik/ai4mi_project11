@@ -50,7 +50,7 @@ from utils import (Dcm,
                    dice_coef,
                    save_images)
 
-from losses import (CrossEntropy)
+from losses import CrossEntropy, GeneralizedDiceLoss, CrossEntropyDice
 
 datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
@@ -133,9 +133,27 @@ def runTraining(args):
     net, optimizer, device, train_loader, val_loader, K = setup(args)
 
     if args.mode == "full":
-        loss_fn = CrossEntropy(idk=list(range(K)))  # Supervise both background and foreground
+        if args.loss == "ce":
+            loss_fn = CrossEntropy(
+                idk=list(range(K))
+            )
+
+        elif args.loss == "generalized_dice":
+            loss_fn = GeneralizedDiceLoss(
+                idk=list(range(K))
+            )
+
+        elif args.loss == "ce_dice":
+            loss_fn = CrossEntropyDice(
+                ce_idk=list(range(K)),
+                dice_idk=list(range(1, K))
+            )
+
     elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
-        loss_fn = CrossEntropy(idk=[0, 1, 3, 4])  # Do not supervise the heart (class 2)
+        loss_fn = CrossEntropy(
+            idk=[0, 1, 3, 4]
+        )
+
     else:
         raise ValueError(args.mode, args.dataset)
 
@@ -251,6 +269,13 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
+
+    parser.add_argument(
+     '--loss',
+     default='ce',
+     choices=['ce', 'generalized_dice', 'ce_dice'],
+     help='Loss function for full supervision.'
+ )
 
     args = parser.parse_args()
 
