@@ -42,6 +42,7 @@ from functools import partial
 from dataset import SliceDataset
 from ShallowNet import shallowCNN
 from ENet import ENet
+from ViT import ViT
 from utils import (Dcm,
                    class2one_hot,
                    probs2one_hot,
@@ -58,6 +59,9 @@ datasets_params: dict[str, dict[str, Any]] = {}
 datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+
+# Architectures, decoupled from the dataset: --model overrides the dataset default
+models: dict[str, Any] = {'enet': ENet, 'shallow': shallowCNN, 'vit': ViT}
 
 def img_transform(img):
         img = img.convert('L')
@@ -86,7 +90,8 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     K: int = datasets_params[args.dataset]['K']
     kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8
     factor: int = datasets_params[args.dataset]['factor'] if 'factor' in datasets_params[args.dataset] else 2
-    net = datasets_params[args.dataset]['net'](1, K, kernels=kernels, factor=factor)
+    net_class = models[args.model] if args.model else datasets_params[args.dataset]['net']
+    net = net_class(1, K, kernels=kernels, factor=factor)
     net.init_weights()
     net.to(device)
 
@@ -245,7 +250,8 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
-
+    parser.add_argument('--model', default=None, choices=list(models.keys()),
+                    help="Override the dataset's default architecture.")
     args = parser.parse_args()
 
     pprint(args)
