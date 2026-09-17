@@ -129,6 +129,12 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
 
 def runTraining(args):
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+   
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K = setup(args)
 
@@ -269,6 +275,7 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
+    parser.add_argument('--seed', default=0, type=int) 
 
     parser.add_argument(
      '--loss',
