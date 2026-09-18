@@ -54,6 +54,7 @@ from utils import (Dcm,
                    save_images)
 
 from losses import (CrossEntropy)
+from pixel_space_norm import normalize_inplane_fov
 
 datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
@@ -62,7 +63,7 @@ datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'fac
 datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 
-def img_transform(img):
+def img_transform(img, pixel_spacing_mm=None):
         ## Default preprocessing
         # img = img.convert('L')
         # img = np.array(img)[np.newaxis, ...]
@@ -72,8 +73,12 @@ def img_transform(img):
 
         ## Preprocessing
         # Gaussian filtering
-        img = gaussian_filter(img, sigma=0.5)
-        img = np.clip(img, 0, 255).astype(np.uint8)
+        #img = gaussian_filter(img, sigma=0.5)
+        #img = np.clip(img, 0, 255).astype(np.uint8)
+        # CLAHE
+        clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        img = clahe.apply(img)
+
         # Denoising
         img = cv.fastNlMeansDenoising(img, None, 50, 7, 21)
         img = cv.fastNlMeansDenoising(img, None, 20, 7, 21)
@@ -86,6 +91,11 @@ def img_transform(img):
         morph_kernel = np.ones((3, 3), dtype=np.uint8)
         img = cv.morphologyEx(img, cv.MORPH_OPEN, morph_kernel)
         #img = cv.morphologyEx(img, cv.MORPH_CLOSE, morph_kernel)
+
+        # Pixel space normalization
+        if pixel_spacing_mm is None:
+            pixel_spacing_mm = (1.0, 1.0)
+        img = normalize_inplane_fov([img], pixel_spacing_mm[:2])[0]
 
         # Normalize and add the model's channel dimension.
         img = img.astype(np.float32) / 255
