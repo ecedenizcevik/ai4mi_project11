@@ -39,7 +39,7 @@ from torch.utils.data import DataLoader
 
 from functools import partial 
 
-from dataset import SliceDataset
+from dataset import SliceDataset, n_input_channels
 from ShallowNet import shallowCNN
 from ENet import ENet
 from utils import (Dcm,
@@ -86,8 +86,13 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     K: int = datasets_params[args.dataset]['K']
     kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8
+    if args.kernels is not None:
+        kernels = args.kernels
+
     factor: int = datasets_params[args.dataset]['factor'] if 'factor' in datasets_params[args.dataset] else 2
-    net = datasets_params[args.dataset]['net'](1, K, kernels=kernels, factor=factor)
+    in_channels: int = n_input_channels(args.neighbours, args.coords, args.fourier_freqs)
+    net = datasets_params[args.dataset]['net'](in_channels, K, kernels=kernels, factor=factor)
+    print(f">> Network input channels: {in_channels}")
     net.init_weights()
     if args.load_weights:
         net.load_state_dict(torch.load(args.load_weights, map_location='cpu'))
@@ -107,7 +112,11 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                              root_dir,
                              img_transform=img_transform,
                              gt_transform= partial(gt_transform, K),
-                             debug=args.debug)
+                             debug=args.debug,
+                             neighbours=args.neighbours,
+                             coords=args.coords,
+                             fourier_freqs=args.fourier_freqs)
+
     train_loader = DataLoader(train_set,
                               batch_size=B,
                               num_workers=5,
@@ -117,7 +126,11 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                            root_dir,
                            img_transform=img_transform,
                            gt_transform=partial(gt_transform, K),
-                           debug=args.debug)
+                           debug=args.debug,
+                           neighbours=args.neighbours,
+                           coords=args.coords,
+                           fourier_freqs=args.fourier_freqs)
+
     val_loader = DataLoader(val_set,
                             batch_size=B,
                             num_workers=5,
@@ -246,6 +259,16 @@ def main():
                         help="Destination directory to save the results (predictions and weights).")
 
     parser.add_argument('--gpu', action='store_true')
+    parser.add_argument('--neighbours', default=0, type=int,
+                        help="2.5D: use 2n+1 slices as input channels.")
+    parser.add_argument('--coords', default='none',
+                        choices=['none', 'z', 'xy', 'xyz'],
+                        help="Add coordinate channels (CoordConv).")
+    parser.add_argument('--fourier_freqs', default=0, type=int,
+                        help="Replace each coordinate ramp with sin/cos pairs.")
+    parser.add_argument('--kernels', default=None, type=int,
+                        help="Override the network width from datasets_params.")
+
     parser.add_argument('--load_weights', type=Path, default=None,
                         help="bestweights.pt to initialize the network with, instead of a random init")
     parser.add_argument('--debug', action='store_true',
