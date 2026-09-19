@@ -51,10 +51,14 @@ from utils import (Dcm,
                    probs2class,
                    tqdm_,
                    dice_coef,
+                   nsd_score,
+                   cldice,
                    save_images)
 
 from losses import (CrossEntropy)
 from pixel_space_norm import normalize_inplane_fov
+
+METRIC_SPACING_MM = (500 / 256, 500 / 256)
 
 datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
@@ -178,6 +182,8 @@ def runTraining(args):
     log_dice_tra: Tensor = torch.zeros((args.epochs, len(train_loader.dataset), K))
     log_loss_val: Tensor = torch.zeros((args.epochs, len(val_loader)))
     log_dice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
+    log_nsd_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
+    log_cldice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
 
     best_dice: float = 0
 
@@ -221,6 +227,10 @@ def runTraining(args):
                     # Metrics computation, not used for training
                     pred_seg = probs2one_hot(pred_probs)
                     log_dice[e, j:j + B, :] = dice_coef(pred_seg, gt)  # One DSC value per sample and per class
+                    # only calculate NSD and clDice for validation
+                    if m == 'val':
+                        log_nsd_val[e, j:j + B, :] = nsd_score(pred_seg, gt, METRIC_SPACING_MM)
+                        log_cldice_val[e, j:j + B, :] = cldice(pred_seg, gt)
 
                     loss = loss_fn(pred_probs, gt)
                     log_loss[e, i] = loss.item()  # One loss value per batch (averaged in the loss)
@@ -242,6 +252,9 @@ def runTraining(args):
                     # For the DSC average: do not take the background class (0) into account:
                     postfix_dict: dict[str, str] = {"Dice": f"{log_dice[e, :j, 1:].mean():05.3f}",
                                                     "Loss": f"{log_loss[e, :i + 1].mean():5.2e}"}
+                    if m == 'val':
+                        postfix_dict |= {"NSD": f"{log_nsd_val[e, :j, 1:].mean():05.3f}",
+                                         "clDice": f"{log_cldice_val[e, :j, 1:].mean():05.3f}"}
                     if K > 2:
                         postfix_dict |= {f"Dice-{k}": f"{log_dice[e, :j, k].mean():05.3f}"
                                          for k in range(1, K)}
@@ -252,6 +265,8 @@ def runTraining(args):
         np.save(args.dest / "dice_tra.npy", log_dice_tra)
         np.save(args.dest / "loss_val.npy", log_loss_val)
         np.save(args.dest / "dice_val.npy", log_dice_val)
+        np.save(args.dest / "nsd_val.npy", log_nsd_val)
+        np.save(args.dest / "cldice_val.npy", log_cldice_val)
 
         current_dice: float = log_dice_val[e, :, 1:].mean().item()
         if current_dice > best_dice:
