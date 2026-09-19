@@ -1,31 +1,8 @@
-#!/usr/bin/env python3
-
-# MIT License
-
-# Copyright (c) 2026
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
 import torch
 import torch.nn as nn
 from torch import Tensor
 
+#add weights in training to make sure small objects such as the trachea also get found
 
 class ViT(nn.Module):
     """Convolution-free ViT for segmentation (SETR-Naive style).
@@ -65,7 +42,7 @@ class ViT(nn.Module):
                                            nhead=heads,
                                            dim_feedforward=self.dim * mlp_ratio,
                                            dropout=dropout,
-                                           activation='gelu',
+                                           activation='gelu', #why not relu or a different activation function
                                            batch_first=True,
                                            norm_first=True)  # pre-LN: stable without warmup
         self.encoder = nn.TransformerEncoder(layer, num_layers=self.depth)
