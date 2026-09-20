@@ -25,6 +25,7 @@
 import re
 import math
 from pathlib import Path
+import pickle
 from typing import Callable, Union
 
 import torch
@@ -83,6 +84,12 @@ class SliceDataset(Dataset):
         self.test_mode: bool = subset == 'test'
 
         self.files = make_dataset(root_dir, subset)
+        spacing_path = Path(root_dir) / 'spacing.pkl'
+        if spacing_path.exists():
+            with spacing_path.open('rb') as handle:
+                self.spacing = pickle.load(handle)
+        else:
+            self.spacing = {}
         if debug:
             self.files = self.files[:10]
 
@@ -132,6 +139,8 @@ class SliceDataset(Dataset):
 
     def __getitem__(self, index) -> dict[str, Union[Tensor, int, str]]:
         img_path, gt_path = self.files[index]
+        patient_id = img_path.stem.rsplit('_', 1)[0]
+        pixel_spacing = self.spacing.get(patient_id)
 
         order, rank = self.vol[index]
         last = len(order) - 1
