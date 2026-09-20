@@ -45,6 +45,7 @@ from functools import partial
 from dataset import SliceDataset
 from ShallowNet import shallowCNN
 from ENet import ENet
+from UNet import UNet
 from utils import (Dcm,
                    class2one_hot,
                    probs2one_hot,
@@ -66,6 +67,18 @@ datasets_params: dict[str, dict[str, Any]] = {}
 datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+datasets_params["TOTALSEG"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+
+# Architectures, decoupled from the dataset: --model overrides the dataset default. The per-dataset
+# 'net' above stays the default, so existing job scripts keep training the ENet baseline unchanged.
+models: dict[str, Any] = {'enet': ENet, 'unet': UNet, 'shallow': shallowCNN}
+
+def img_transform_original(img):
+        img = img.convert('L')
+        img = np.array(img)[np.newaxis, ...]
+        img = img / 255  # max <= 1
+        img = torch.tensor(img, dtype=torch.float32)
+        return img
 
 def img_transform(img, pixel_spacing_mm=None):
         ## Default preprocessing
@@ -108,6 +121,9 @@ def img_transform(img, pixel_spacing_mm=None):
         img = torch.tensor(img, dtype=torch.float32)
         return img
 
+img_transforms: dict[str, Any] = {'clean': img_transform,
+                                  'original': img_transform_original}
+
 def gt_transform(K, img):
         img = np.array(img)[...]
         # The idea is that the classes are mapped to {0, 255} for binary cases
@@ -125,11 +141,20 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     device = torch.device("cuda") if gpu else torch.device("cpu")
     print(f">> Picked {device} to run experiments")
 
-    K: int = datasets_params[args.dataset]['K']
-    kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8
-    factor: int = datasets_params[args.dataset]['factor'] if 'factor' in datasets_params[args.dataset] else 2
-    net = datasets_params[args.dataset]['net'](1, K, kernels=kernels, factor=factor)
+    params: dict[str, Any] = datasets_params[args.dataset]
+    K: int = params['K']
+    # --model/--kernels/--factor override the per-dataset defaults, so the same dataset can be
+    # trained with either backbone without editing datasets_params.
+    net_class = models[args.model] if args.model else params['net']
+    kernels: int = args.kernels if args.kernels else params.get('kernels', 8)
+    factor: int = args.factor if args.factor else params.get('factor', 2)
+    net = net_class(1, K, kernels=kernels, factor=factor)
     net.init_weights()
+    if args.load_weights:
+        # Fine-tuning: start from a previous run (e.g. the TOTALSEG pretraining) instead of the random
+        # init above. Loading is strict, so a mismatch in K/kernels/factor fails here rather than silently.
+        net.load_state_dict(torch.load(args.load_weights, map_location='cpu'))
+        print(f">> Loaded weights from {args.load_weights}")
     net.to(device)
 
     lr = 0.0005
@@ -139,11 +164,12 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     B: int = datasets_params[args.dataset]['B']
     root_dir = Path("data") / args.dataset
 
-
+    transform_fn = img_transforms[args.img_transform]
+    print(f">> Using '{args.img_transform}' image preprocessing")
 
     train_set = SliceDataset('train',
                              root_dir,
-                             img_transform=img_transform,
+                             img_transform=transform_fn,
                              gt_transform= partial(gt_transform, K),
                              debug=args.debug)
     train_loader = DataLoader(train_set,
@@ -153,7 +179,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     val_set = SliceDataset('val',
                            root_dir,
-                           img_transform=img_transform,
+                           img_transform=transform_fn,
                            gt_transform=partial(gt_transform, K),
                            debug=args.debug)
     val_loader = DataLoader(val_set,
@@ -295,6 +321,17 @@ def main():
                         help="Destination directory to save the results (predictions and weights).")
 
     parser.add_argument('--gpu', action='store_true')
+    parser.add_argument('--model', default=None, choices=list(models.keys()),
+                        help="Override the dataset's default architecture.")
+    parser.add_argument('--kernels', type=int, default=None,
+                        help="Base channel count, overriding the per-dataset default. "
+                             "UNet wants 64 for the widths of the paper; 8 is the ENet baseline.")
+    parser.add_argument('--factor', type=int, default=None,
+                        help="Channel growth per level for UNet, projection factor for ENet.")
+    parser.add_argument('--load_weights', type=Path, default=None,
+                        help="bestweights.pt to initialize the network with, instead of a random init")
+    parser.add_argument('--img_transform', default='clean', choices=list(img_transforms.keys()),
+                        help="Added option between preprocessed image transform and the old original one for testing.")
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
