@@ -42,6 +42,7 @@ from functools import partial
 from dataset import SliceDataset
 from ShallowNet import shallowCNN
 from ENet import ENet
+from UNet import UNet
 from utils import (Dcm,
                    class2one_hot,
                    probs2one_hot,
@@ -59,6 +60,10 @@ datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'fac
 datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["TOTALSEG"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+
+# Architectures, decoupled from the dataset: --model overrides the dataset default. The per-dataset
+# 'net' above stays the default, so existing job scripts keep training the ENet baseline unchanged.
+models: dict[str, Any] = {'enet': ENet, 'unet': UNet, 'shallow': shallowCNN}
 
 def img_transform(img):
         img = img.convert('L')
@@ -84,12 +89,18 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     device = torch.device("cuda") if gpu else torch.device("cpu")
     print(f">> Picked {device} to run experiments")
 
-    K: int = datasets_params[args.dataset]['K']
-    kernels: int = datasets_params[args.dataset]['kernels'] if 'kernels' in datasets_params[args.dataset] else 8
-    factor: int = datasets_params[args.dataset]['factor'] if 'factor' in datasets_params[args.dataset] else 2
-    net = datasets_params[args.dataset]['net'](1, K, kernels=kernels, factor=factor)
+    params: dict[str, Any] = datasets_params[args.dataset]
+    K: int = params['K']
+    # --model/--kernels/--factor override the per-dataset defaults, so the same dataset can be
+    # trained with either backbone without editing datasets_params.
+    net_class = models[args.model] if args.model else params['net']
+    kernels: int = args.kernels if args.kernels else params.get('kernels', 8)
+    factor: int = args.factor if args.factor else params.get('factor', 2)
+    net = net_class(1, K, kernels=kernels, factor=factor)
     net.init_weights()
     if args.load_weights:
+        # Fine-tuning: start from a previous run (e.g. the TOTALSEG pretraining) instead of the random
+        # init above. Loading is strict, so a mismatch in K/kernels/factor fails here rather than silently.
         net.load_state_dict(torch.load(args.load_weights, map_location='cpu'))
         print(f">> Loaded weights from {args.load_weights}")
     net.to(device)
@@ -246,6 +257,13 @@ def main():
                         help="Destination directory to save the results (predictions and weights).")
 
     parser.add_argument('--gpu', action='store_true')
+    parser.add_argument('--model', default=None, choices=list(models.keys()),
+                        help="Override the dataset's default architecture.")
+    parser.add_argument('--kernels', type=int, default=None,
+                        help="Base channel count, overriding the per-dataset default. "
+                             "UNet wants 64 for the widths of the paper; 8 is the ENet baseline.")
+    parser.add_argument('--factor', type=int, default=None,
+                        help="Channel growth per level for UNet, projection factor for ENet.")
     parser.add_argument('--load_weights', type=Path, default=None,
                         help="bestweights.pt to initialize the network with, instead of a random init")
     parser.add_argument('--debug', action='store_true',
