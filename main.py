@@ -56,7 +56,7 @@ from utils import (Dcm,
                    cldice,
                    save_images)
 
-from losses import (CrossEntropy)
+from losses import CrossEntropy, GeneralizedDiceLoss, CrossEntropyDice
 from pixel_space_norm import normalize_inplane_fov
 
 METRIC_SPACING_MM = (500 / 256, 500 / 256)
@@ -193,13 +193,37 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
 
 def runTraining(args):
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+   
     print(f">>> Setting up to train on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K = setup(args)
 
     if args.mode == "full":
-        loss_fn = CrossEntropy(idk=list(range(K)))  # Supervise both background and foreground
+        if args.loss == "ce":
+            loss_fn = CrossEntropy(
+                idk=list(range(K))
+            )
+
+        elif args.loss == "generalized_dice":
+            loss_fn = GeneralizedDiceLoss(
+                idk=list(range(K))
+            )
+
+        elif args.loss == "ce_dice":
+            loss_fn = CrossEntropyDice(
+                ce_idk=list(range(K)),
+                dice_idk=list(range(1, K))
+            )
+
     elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
-        loss_fn = CrossEntropy(idk=[0, 1, 3, 4])  # Do not supervise the heart (class 2)
+        loss_fn = CrossEntropy(
+            idk=[0, 1, 3, 4]
+        )
+
     else:
         raise ValueError(args.mode, args.dataset)
 
@@ -335,6 +359,14 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
+    parser.add_argument('--seed', default=0, type=int) 
+
+    parser.add_argument(
+     '--loss',
+     default='ce',
+     choices=['ce', 'generalized_dice', 'ce_dice'],
+     help='Loss function for full supervision.'
+ )
 
     args = parser.parse_args()
 
