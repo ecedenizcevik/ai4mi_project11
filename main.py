@@ -45,6 +45,7 @@ from functools import partial
 from dataset import SliceDataset, n_input_channels
 from ShallowNet import shallowCNN
 from ENet import ENet
+from ViT import ViT
 from UNet import UNet
 from utils import (Dcm,
                    class2one_hot,
@@ -71,7 +72,7 @@ datasets_params["TOTALSEG"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'facto
 
 # Architectures, decoupled from the dataset: --model overrides the dataset default. The per-dataset
 # 'net' above stays the default, so existing job scripts keep training the ENet baseline unchanged.
-models: dict[str, Any] = {'enet': ENet, 'unet': UNet, 'shallow': shallowCNN}
+models: dict[str, Any] = {'enet': ENet, 'unet': UNet, 'shallow': shallowCNN, 'vit': ViT}
 
 def img_transform_original(img, pixel_spacing_mm= None):
         img = img.convert('L')
