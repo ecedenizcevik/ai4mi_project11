@@ -6,8 +6,8 @@ import shutil
 import glob
 from scipy.ndimage import distance_transform_edt
 
-base_data_dir = "data/segthor_train/train"
-cleaned_data_dir = "data/segthor_train_cleaned/train"
+base_data_dir = "data/segthor_part1/train"
+cleaned_data_dir = "data/segthor_part1_cleaned/train"
 
 
 os.makedirs(cleaned_data_dir, exist_ok=True)
