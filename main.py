@@ -42,7 +42,7 @@ from scipy.ndimage import gaussian_filter
 
 from functools import partial 
 
-from dataset import SliceDataset
+from dataset import SliceDataset, n_input_channels
 from ShallowNet import shallowCNN
 from ENet import ENet
 from UNet import UNet
@@ -73,7 +73,7 @@ datasets_params["TOTALSEG"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'facto
 # 'net' above stays the default, so existing job scripts keep training the ENet baseline unchanged.
 models: dict[str, Any] = {'enet': ENet, 'unet': UNet, 'shallow': shallowCNN}
 
-def img_transform_original(img):
+def img_transform_original(img, pixel_spacing_mm= None):
         img = img.convert('L')
         img = np.array(img)[np.newaxis, ...]
         img = img / 255  # max <= 1
@@ -146,9 +146,12 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     # --model/--kernels/--factor override the per-dataset defaults, so the same dataset can be
     # trained with either backbone without editing datasets_params.
     net_class = models[args.model] if args.model else params['net']
-    kernels: int = args.kernels if args.kernels else params.get('kernels', 8)
-    factor: int = args.factor if args.factor else params.get('factor', 2)
-    net = net_class(1, K, kernels=kernels, factor=factor)
+    kernels: int = args.kernels if args.kernels is not None else params.get('kernels', 8)
+    factor: int = args.factor if args.factor is not None else params.get('factor', 2)
+    in_channels: int = n_input_channels(args.neighbours, args.coords, args.fourier_freqs)
+    net = net_class(in_channels, K, kernels=kernels, factor=factor)
+    print(f">> Network input channels: {in_channels}")
+    
     net.init_weights()
     if args.load_weights:
         # Fine-tuning: start from a previous run (e.g. the TOTALSEG pretraining) instead of the random
@@ -171,7 +174,11 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                              root_dir,
                              img_transform=transform_fn,
                              gt_transform= partial(gt_transform, K),
-                             debug=args.debug)
+                             debug=args.debug,
+                             neighbours=args.neighbours,
+                             coords=args.coords,
+                             fourier_freqs=args.fourier_freqs)
+
     train_loader = DataLoader(train_set,
                               batch_size=B,
                               num_workers=5,
@@ -181,7 +188,11 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
                            root_dir,
                            img_transform=transform_fn,
                            gt_transform=partial(gt_transform, K),
-                           debug=args.debug)
+                           debug=args.debug,
+                           neighbours=args.neighbours,
+                           coords=args.coords,
+                           fourier_freqs=args.fourier_freqs)
+
     val_loader = DataLoader(val_set,
                             batch_size=B,
                             num_workers=5,
@@ -345,6 +356,13 @@ def main():
                         help="Destination directory to save the results (predictions and weights).")
 
     parser.add_argument('--gpu', action='store_true')
+    parser.add_argument('--neighbours', default=0, type=int,
+                        help="2.5D: use 2n+1 slices as input channels.")
+    parser.add_argument('--coords', default='none',
+                        choices=['none', 'z', 'xy', 'xyz'],
+                        help="Add coordinate channels (CoordConv).")
+    parser.add_argument('--fourier_freqs', default=0, type=int,
+                        help="Replace each coordinate ramp with sin/cos pairs.")
     parser.add_argument('--model', default=None, choices=list(models.keys()),
                         help="Override the dataset's default architecture.")
     parser.add_argument('--kernels', type=int, default=None,
