@@ -46,6 +46,11 @@ from dataset import SliceDataset, n_input_channels
 from ShallowNet import shallowCNN
 from ENet import ENet
 from ViT import ViT
+try:
+    from swin_model import build_swin_unet
+except ImportError:  # swin_model.py not committed yet
+    build_swin_unet = None
+from ViT_Sil import ViT_Sil
 from UNet import UNet
 from utils import (Dcm,
                    class2one_hot,
@@ -72,7 +77,9 @@ datasets_params["TOTALSEG"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'facto
 
 # Architectures, decoupled from the dataset: --model overrides the dataset default. The per-dataset
 # 'net' above stays the default, so existing job scripts keep training the ENet baseline unchanged.
-models: dict[str, Any] = {'enet': ENet, 'unet': UNet, 'shallow': shallowCNN, 'vit': ViT}
+models: dict[str, Any] = {'enet': ENet, 'unet': UNet, 'shallow': shallowCNN, 'vit': ViT, 'vit_sil': ViT_Sil}
+if build_swin_unet is not None:
+    models['swin'] = build_swin_unet
 
 def img_transform_original(img, pixel_spacing_mm= None):
         img = img.convert('L')
@@ -150,10 +157,16 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     kernels: int = args.kernels if args.kernels is not None else params.get('kernels', 8)
     factor: int = args.factor if args.factor is not None else params.get('factor', 2)
     in_channels: int = n_input_channels(args.neighbours, args.coords, args.fourier_freqs)
-    net = net_class(in_channels, K, kernels=kernels, factor=factor)
+
+    if args.model == 'swin':
+        # Factory function with its own signature; ignores in_channels/kernels/factor
+        # and loads its own pretrained checkpoint.
+        assert in_channels == 1, "Swin-Unet expects a single input channel"
+        net = build_swin_unet(num_classes=K, checkpoint=Path(args.swin_checkpoint), img_size=256)
+    else:
+        net = net_class(in_channels, K, kernels=kernels, factor=factor)
+        net.init_weights()
     print(f">> Network input channels: {in_channels}")
-    
-    net.init_weights()
     if args.load_weights:
         # Fine-tuning: start from a previous run (e.g. the TOTALSEG pretraining) instead of the random
         # init above. Loading is strict, so a mismatch in K/kernels/factor fails here rather than silently.
@@ -211,7 +224,7 @@ def runTraining(args):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
    
-    print(f">>> Setting up to train on {args.dataset} with {args.mode}")
+    print(f">>> Setting up to train {args.model} on {args.dataset} with {args.mode}")
     net, optimizer, device, train_loader, val_loader, K = setup(args)
 
     if args.mode == "full":
@@ -250,6 +263,9 @@ def runTraining(args):
     best_dice: float = 0
 
     for e in range(args.epochs):
+        # NSD and clDice are slow so we do it every N epochs.
+        slow_metrics: bool = args.metric_every > 0 and (
+            (e % args.metric_every == 0) or (e == args.epochs - 1))
         for m in ['train', 'val']:
             match m:
                 case 'train':
@@ -288,9 +304,10 @@ def runTraining(args):
 
                     # Metrics computation, not used for training
                     pred_seg = probs2one_hot(pred_probs)
+                    # print(f"pred_seg size: {pred_seg.size()}")
                     log_dice[e, j:j + B, :] = dice_coef(pred_seg, gt)  # One DSC value per sample and per class
                     # only calculate NSD and clDice for validation
-                    if m == 'val':
+                    if m == 'val' and slow_metrics:
                         log_nsd_val[e, j:j + B, :] = nsd_score(pred_seg, gt, METRIC_SPACING_MM)
                         log_cldice_val[e, j:j + B, :] = cldice(pred_seg, gt)
 
@@ -314,7 +331,7 @@ def runTraining(args):
                     # For the DSC average: do not take the background class (0) into account:
                     postfix_dict: dict[str, str] = {"Dice": f"{log_dice[e, :j, 1:].mean():05.3f}",
                                                     "Loss": f"{log_loss[e, :i + 1].mean():5.2e}"}
-                    if m == 'val':
+                    if m == 'val' and slow_metrics:
                         postfix_dict |= {"NSD": f"{log_nsd_val[e, :j, 1:].mean():05.3f}",
                                          "clDice": f"{log_cldice_val[e, :j, 1:].mean():05.3f}"}
                     if K > 2:
@@ -346,11 +363,16 @@ def runTraining(args):
             torch.save(net, args.dest / "bestmodel.pkl")
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
 
+    print("\n Training finished. ")
+    print(f"\n Best dice: {best_dice}")
+
 
 def main():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--epochs', default=20, type=int)
+    parser.add_argument('--swin_checkpoint', type=Path,
+                        help="Path to the pretrained Swin-Unet checkpoint")
+    parser.add_argument('--epochs', default=25, type=int)
     parser.add_argument('--dataset', default='TOY2', choices=datasets_params.keys())
     parser.add_argument('--mode', default='full', choices=['partial', 'full'])
     parser.add_argument('--dest', type=Path, required=True,
@@ -378,6 +400,8 @@ def main():
     parser.add_argument('--debug', action='store_true',
                         help="Keep only a fraction (10 samples) of the datasets, "
                              "to test the logics around epochs and logging easily.")
+    parser.add_argument('--metric_every', default=5, type=int,
+                        help="Compute the slow metrics (NSD and clDice) every N epochs. ")
     parser.add_argument('--seed', default=0, type=int) 
 
     parser.add_argument(

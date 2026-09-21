@@ -42,7 +42,7 @@ class CrossEntropy():
         log_p = (pred_softmax[:, self.idk, ...] + 1e-10).log()
         mask = weak_target[:, self.idk, ...].float()
 
-        loss = - einsum("bkwh,bkwh->", mask, log_p)
+        loss = - einsum("bk...,bk...->", mask, log_p)
         loss /= mask.sum() + 1e-10
 
         return loss
@@ -66,7 +66,7 @@ class DiceLoss:
         mask = target[:, self.idk, ...].float()
 
         # Aggregate over batch and spatial dimensions.
-        dims = (0, 2, 3)
+        dims = (0,) + tuple(range(2, pred.dim()))
 
         intersection = (pred * mask).sum(dim=dims)
         denominator = pred.sum(dim=dims) + mask.sum(dim=dims)
@@ -97,7 +97,7 @@ class GeneralizedDiceLoss:
         pred = pred_softmax[:, self.idk, ...]
         mask = target[:, self.idk, ...].float()
 
-        dims = (0, 2, 3)
+        dims = (0,) + tuple(range(2, pred.dim()))
 
         target_volume = mask.sum(dim=dims)
         pred_volume = pred.sum(dim=dims)
