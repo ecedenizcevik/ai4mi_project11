@@ -29,6 +29,7 @@ from pathlib import Path
 from pprint import pprint
 from operator import itemgetter
 from shutil import copytree, rmtree
+from PIL import Image
 
 import torch
 import numpy as np
@@ -68,15 +69,26 @@ datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'fac
 datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'B': 8, 'kernels': 8, 'factor': 2}
 
+def resize_if_needed(img, img_size, resampling):
+    if img_size is not None:
+        img = img.resize((img_size, img_size), resampling)
+    return img
 
-def img_transform(img):
+
+def img_transform(img, img_size=None):
         img = img.convert('L')
+
+        img = resize_if_needed(img, img_size, Image.Resampling.BILINEAR)
+
+
         img = np.array(img)[np.newaxis, ...]
         img = img / 255  # max <= 1
         img = torch.tensor(img, dtype=torch.float32)
         return img
 
-def gt_transform(K, img):
+def gt_transform(K, img, img_size=None):
+        img = img.convert('L')
+        img = resize_if_needed(img, img_size, Image.Resampling.NEAREST)
         img = np.array(img)[...]
         # The idea is that the classes are mapped to {0, 255} for binary cases
         # {0, 85, 170, 255} for 4 classes
@@ -106,7 +118,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
         net = net_class(
             num_classes=K,
             checkpoint=checkpoint,
-            img_size=256
+            img_size=224
         )
     else:
         net = net_class(1, K, kernels=kernels, factor=factor)
@@ -123,13 +135,14 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     B: int = datasets_params[args.dataset]['B']
     root_dir = Path("data") / args.dataset
 
+    swin_img_size = 224 if args.model == "SwinUnet" else None
 
 
     train_set = SliceDataset('train',
-                             root_dir,
-                             img_transform=img_transform,
-                             gt_transform= partial(gt_transform, K),
-                             debug=args.debug)
+                            root_dir,
+                            img_transform=partial(img_transform, img_size=swin_img_size),
+                            gt_transform=partial(gt_transform, K, img_size=swin_img_size),
+                            debug=args.debug)
     train_loader = DataLoader(train_set,
                               batch_size=B,
                               num_workers=5,
@@ -137,8 +150,8 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
 
     val_set = SliceDataset('val',
                            root_dir,
-                           img_transform=img_transform,
-                           gt_transform=partial(gt_transform, K),
+                            img_transform=partial(img_transform, img_size=swin_img_size),
+                            gt_transform=partial(gt_transform, K, img_size=swin_img_size),
                            debug=args.debug)
     val_loader = DataLoader(val_set,
                             batch_size=B,
