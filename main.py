@@ -76,33 +76,29 @@ def img_transform(img, pixel_spacing_mm=None):
         img = np.array(img.convert('L'), dtype=np.uint8)
 
         ## Preprocessing
-        # Gaussian filtering
-        #img = gaussian_filter(img, sigma=0.5)
-        #img = np.clip(img, 0, 255).astype(np.uint8)
         # CLAHE
         clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         img = clahe.apply(img)
 
         # Denoising
-        img = cv.fastNlMeansDenoising(img, None, 50, 7, 21)
-        img = cv.fastNlMeansDenoising(img, None, 20, 7, 21)
+        img = cv.fastNlMeansDenoising(img, None, 5, 7, 21)
         # Edge sharpening
         sharpen_kernel = np.array([[0, -1, 0],
                         [-1, 5, -1],
                         [0, -1, 0]], dtype=np.float32)
         img = cv.filter2D(img, -1, sharpen_kernel)
-        # Opening and closing
+        # Opening
         morph_kernel = np.ones((3, 3), dtype=np.uint8)
         img = cv.morphologyEx(img, cv.MORPH_OPEN, morph_kernel)
-        #img = cv.morphologyEx(img, cv.MORPH_CLOSE, morph_kernel)
 
         # Pixel space normalization
         if pixel_spacing_mm is None:
             pixel_spacing_mm = (1.0, 1.0)
         img = normalize_inplane_fov([img], pixel_spacing_mm[:2])[0]
 
-        # Normalize and add the model's channel dimension.
-        img = img.astype(np.float32) / 255
+        # Per-slice z-score normalization
+        img = img.astype(np.float32)
+        img = (img - img.mean()) / max(float(img.std()), 1e-6)
         img = img[None, ...]
 
         img = torch.tensor(img, dtype=torch.float32)
@@ -218,7 +214,7 @@ def runTraining(args):
                         opt.zero_grad()
 
                     # Sanity tests to see we loaded and encoded the data correctly
-                    assert 0 <= img.min() and img.max() <= 1
+                    assert torch.isfinite(img).all()
                     B, _, W, H = img.shape
 
                     pred_logits = net(img)
