@@ -50,7 +50,7 @@ from utils import (Dcm,
                    dice_coef,
                    save_images)
 
-from losses import CrossEntropy, GeneralizedDiceLoss, CrossEntropyDice
+from losses import CrossEntropy, GeneralizedDiceLoss, CrossEntropyDice, TverskyLoss
 
 datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
@@ -150,6 +150,13 @@ def runTraining(args):
             loss_fn = CrossEntropyDice(
                 ce_idk=list(range(K)),
                 dice_idk=list(range(1, K))
+            )
+
+        elif args.loss == "tversky":
+            loss_fn = TverskyLoss(
+                idk=list(range(1, K)),
+                alpha=0.3,
+                beta=0.7
             )
 
     elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
@@ -275,7 +282,7 @@ def main():
     parser.add_argument(
      '--loss',
      default='ce',
-     choices=['ce', 'generalized_dice', 'ce_dice'],
+     choices=['ce', 'generalized_dice', 'ce_dice', 'tversky'],
      help='Loss function for full supervision.'
  )
 

@@ -65,7 +65,6 @@ class DiceLoss:
         pred = pred_softmax[:, self.idk, ...]
         mask = target[:, self.idk, ...].float()
 
-        # Aggregate over batch and spatial dimensions.
         dims = (0, 2, 3)
 
         intersection = (pred * mask).sum(dim=dims)
@@ -78,6 +77,54 @@ class DiceLoss:
         )
 
         return 1.0 - dice.mean()
+
+
+class TverskyLoss:
+    """
+    Multiclass Tversky loss.
+    Alpha controls false-positive penalty, Beta controls the false-negative penalty
+    When beta > alpha, loss penalizes missed organ voxels more strongly
+    """
+
+    def __init__(self, **kwargs):
+        self.idk = kwargs['idk']
+        self.alpha = kwargs.get('alpha', 0.3)
+        self.beta = kwargs.get('beta', 0.7)
+        self.smooth = kwargs.get('smooth', 1e-6)
+
+        assert self.alpha >= 0
+        assert self.beta >= 0
+        assert self.alpha + self.beta > 0
+
+        print(f"Initialized {self.__class__.__name__} with {kwargs}")
+
+    def __call__(self, pred_softmax, target):
+        assert pred_softmax.shape == target.shape
+        assert simplex(pred_softmax)
+        assert sset(target, [0, 1])
+
+        pred = pred_softmax[:, self.idk, ...]
+        mask = target[:, self.idk, ...].float()
+
+        dims = (0, 2, 3)
+
+        tp = (pred * mask).sum(dim=dims)
+        fp = (pred * (1.0 - mask)).sum(dim=dims)
+        fn = ((1.0 - pred) * mask).sum(dim=dims)
+
+        tversky = (tp + self.smooth) / (
+            tp
+            + self.alpha * fp
+            + self.beta * fn
+            + self.smooth
+        )
+
+        present = mask.sum(dim=dims) > 0
+
+        if not present.any():
+            return pred_softmax.sum() * 0.0
+
+        return 1.0 - tversky[present].mean()
 
 
 class GeneralizedDiceLoss:
