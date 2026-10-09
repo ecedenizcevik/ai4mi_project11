@@ -221,3 +221,43 @@ class CrossEntropyDice:
 class PartialCrossEntropy(CrossEntropy):
     def __init__(self, **kwargs):
         super().__init__(idk=[1], **kwargs)
+
+
+
+class CrossEntropyTversky:
+    """
+    Combined Cross-Entropy and Tversky Loss.
+    """
+
+    def __init__(self, **kwargs):
+        self.idk = kwargs["idk"]
+        self.alpha = kwargs.get("alpha", 0.3)
+        self.beta = kwargs.get("beta", 0.7)
+        self.ce_weight = kwargs.get("ce_weight", 0.5)
+
+        assert 0.0 <= self.ce_weight <= 1.0
+
+        self.ce = CrossEntropy(
+            idk=self.idk
+        )
+
+        self.tversky = TverskyLoss(
+            idk=[k for k in self.idk if k != 0],
+            alpha=self.alpha,
+            beta=self.beta
+        )
+
+        print(
+            f"Initialized {self.__class__.__name__} "
+            f"with {kwargs}"
+        )
+
+    def __call__(self, pred_softmax, target):
+        ce_loss = self.ce(pred_softmax, target)
+        tversky_loss = self.tversky(pred_softmax, target)
+
+        return (
+            self.ce_weight * ce_loss
+            + (1.0 - self.ce_weight) * tversky_loss
+        )
+
