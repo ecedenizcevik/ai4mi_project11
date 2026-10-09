@@ -127,6 +127,40 @@ class TverskyLoss:
         return 1.0 - tversky[present].mean()
 
 
+
+class FocalLoss:
+    """
+    Multiclass Focal Loss for one-hot segmentation masks.
+
+    gamma = 0 gives regular Cross-Entropy.
+    gamma > 0 reduces the contribution of easy voxels.
+    """
+
+    def __init__(self, **kwargs):
+        self.idk = kwargs["idk"]
+        self.gamma = kwargs.get("gamma", 2.0)
+        self.eps = kwargs.get("eps", 1e-10)
+
+        assert self.gamma >= 0
+        assert self.eps > 0
+
+        print(f"Initialized {self.__class__.__name__} with {kwargs}")
+
+    def __call__(self, pred_softmax, target):
+        assert pred_softmax.shape == target.shape
+        assert simplex(pred_softmax)
+        assert sset(target, [0, 1])
+
+        pred = pred_softmax[:, self.idk, ...]
+        mask = target[:, self.idk, ...].float()
+        log_p = pred.clamp_min(self.eps).log()
+        focal_factor = (1.0 - pred).pow(self.gamma)
+        loss = -mask * focal_factor * log_p
+
+        return loss.sum() / (mask.sum() + self.eps)
+
+
+
 class GeneralizedDiceLoss:
     """
     Generalized Dice loss.
