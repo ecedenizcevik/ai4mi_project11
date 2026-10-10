@@ -124,20 +124,6 @@ def img_transform(img, pixel_spacing_mm=None, img_size=None):
         clahe = cv.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         img = clahe.apply(img)
 
-        # Denoising
-        img = cv.fastNlMeansDenoising(img, None, 5, 7, 21)
-        # Edge sharpening
-        sharpen_kernel = np.array([[0, -1, 0],
-                        [-1, 5, -1],
-                        [0, -1, 0]], dtype=np.float32)
-        img = cv.filter2D(img, -1, sharpen_kernel)
-        # Opening
-        morph_kernel = np.ones((3, 3), dtype=np.uint8)
-        img = cv.morphologyEx(img, cv.MORPH_OPEN, morph_kernel)
-
-        # Pixel space normalization
-        
-
         # Per-slice z-score normalization
         img = img.astype(np.float32)
         img = (img - img.mean()) / max(float(img.std()), 1e-6)
