@@ -135,7 +135,104 @@ class CrossEntropyDice:
         dice_loss = self.dice(pred_softmax, target)
 
         return ce_loss + dice_loss
+class TverskyLoss:
+    """
+    Multiclass Tversky loss
+    """
+    def __init__(self, **kwargs):
+        self.idk = kwargs["idk"]
+        self.alpha = kwargs.get("alpha", 0.3)
+        self.beta = kwargs.get("beta", 0.7)
+        self.smooth = kwargs.get("smooth", 1e-6)
 
+        assert self.alpha >= 0
+        assert self.beta >= 0
+        assert self.alpha + self.beta > 0
+
+        print(f"Initialized {self.__class__.__name__} with {kwargs}")
+
+    def __call__(self, pred_softmax, target):
+        assert pred_softmax.shape == target.shape
+        assert simplex(pred_softmax)
+        assert sset(target, [0, 1])
+
+        pred = pred_softmax[:, self.idk, ...]
+        mask = target[:, self.idk, ...].float()
+
+        dims = (0,) + tuple(range(2, pred.dim()))
+
+        tp = (pred * mask).sum(dim=dims)
+        fp = (pred * (1.0 - mask)).sum(dim=dims)
+        fn = ((1.0 - pred) * mask).sum(dim=dims)
+
+        tversky = (tp + self.smooth) / (
+            tp + self.alpha * fp + self.beta * fn + self.smooth
+        )
+
+        present = mask.sum(dim=dims) > 0
+
+        if not present.any():
+            return pred_softmax.sum() * 0.0
+
+        return 1.0 - tversky[present].mean()
+
+
+class FocalLoss:
+    """
+    Multiclass focal loss for one-hot segmentation targets.
+    """
+    def __init__(self, **kwargs):
+        self.idk = kwargs["idk"]
+        self.gamma = kwargs.get("gamma", 2.0)
+        self.eps = kwargs.get("eps", 1e-10)
+
+        assert self.gamma >= 0
+        assert self.eps > 0
+
+        print(f"Initialized {self.__class__.__name__} with {kwargs}")
+
+    def __call__(self, pred_softmax, target):
+        assert pred_softmax.shape == target.shape
+        assert simplex(pred_softmax)
+        assert sset(target, [0, 1])
+
+        pred = pred_softmax[:, self.idk, ...]
+        mask = target[:, self.idk, ...].float()
+
+        log_p = pred.clamp_min(self.eps).log()
+        focal_factor = (1.0 - pred).pow(self.gamma)
+
+        loss = -mask * focal_factor * log_p
+
+        return loss.sum() / (mask.sum() + self.eps)
+
+
+class CrossEntropyTversky:
+    """
+    Combined Cross-Entropy + Tversky loss.
+    """
+    def __init__(self, **kwargs):
+        self.ce = CrossEntropy(idk=kwargs["ce_idk"])
+
+        self.tversky = TverskyLoss(
+            idk=kwargs["tversky_idk"],
+            alpha=kwargs.get("alpha", 0.3),
+            beta=kwargs.get("beta", 0.7),
+        )
+
+        self.ce_weight = kwargs.get("ce_weight", 0.5)
+        self.tversky_weight = kwargs.get("tversky_weight", 0.5)
+
+        print(f"Initialized {self.__class__.__name__} with {kwargs}")
+
+    def __call__(self, pred_softmax, target):
+        ce_loss = self.ce(pred_softmax, target)
+        tversky_loss = self.tversky(pred_softmax, target)
+
+        return (
+            self.ce_weight * ce_loss
+            + self.tversky_weight * tversky_loss
+        )
 
 class PartialCrossEntropy(CrossEntropy):
     def __init__(self, **kwargs):
