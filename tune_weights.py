@@ -33,11 +33,11 @@ import numpy as np
 from torch.utils.data import DataLoader
 
 from dataset import SliceDataset
-from main import img_transform, gt_transform   # reuse, so inputs always match
+from main import img_transforms, gt_transform   # reuse, so inputs always match training
 
 
 def dice_per_class(probs, gts, patients, weights, K):
-    """Dice for each class, computed per patient and then averaged."""
+    """Dice for each class, computed per patient (3D) and then averaged."""
     pred = (probs.float() * weights[None, :, None, None]).argmax(dim=1)
 
     scores = []
@@ -48,7 +48,6 @@ def dice_per_class(probs, gts, patients, weights, K):
             pk, tk = (pred[sel] == k), (gts[sel] == k)
             overlap = (pk & tk).sum().item()
             total = pk.sum().item() + tk.sum().item()
-            # organ not in this scan at all -> call it good and move on
             row.append(1.0 if total == 0 else 2 * overlap / total)
         scores.append(row)
 
@@ -80,6 +79,9 @@ def main():
     p.add_argument('--data_dir', type=Path, default=Path("data/SEGTHOR"))
     p.add_argument('--K', type=int, default=5)
     p.add_argument('--gpu', action='store_true')
+    p.add_argument('--img_transform', default='original', choices=list(img_transforms.keys()))
+    p.add_argument('--neighbours', type=int, default=0)
+    p.add_argument('--coords', default='none')
     args = p.parse_args()
 
     device = torch.device("cuda") if args.gpu and torch.cuda.is_available() else \
@@ -89,11 +91,13 @@ def main():
     net = torch.load(args.model, map_location=device, weights_only=False).to(device)
     net.eval()
 
-    val = SliceDataset('val', args.data_dir, img_transform=img_transform,
-                       gt_transform=partial(gt_transform, args.K))
+    val = SliceDataset('val', args.data_dir,
+                       img_transform=img_transforms[args.img_transform],
+                       gt_transform=partial(gt_transform, args.K),
+                       neighbours=args.neighbours, coords=args.coords)
     loader = DataLoader(val, batch_size=8, num_workers=0, shuffle=False)
 
-    # --- run the model once and keep its scores -------------------------- #
+    # run the model once and keep its scores
     probs, gts, stems = [], [], []
     with torch.no_grad():
         for batch in loader:
@@ -105,7 +109,7 @@ def main():
     probs, gts = torch.cat(probs), torch.cat(gts)
     patients = np.array(["_".join(s.split("_")[:-1]) or s for s in stems])
 
-    # --- split the patients in half -------------------------------------- #
+    # split the patients in half
     names = np.unique(patients)
     half = max(1, len(names) // 2)
     tune, report = np.isin(patients, names[:half]), np.isin(patients, names[half:])
@@ -117,7 +121,7 @@ def main():
     out_file.write_text(json.dumps(weights.tolist()))
     print(f"\nweights saved to {out_file}")
 
-    # --- honest before/after on the patients we did NOT tune on ----------- #
+    # honest before/after on the patients we did NOT tune on
     if report.any():
         before = dice_per_class(probs[report], gts[report], patients[report],
                                 torch.ones(args.K), args.K)
@@ -127,7 +131,7 @@ def main():
         labels = ['background', 'esophagus', 'heart', 'trachea', 'aorta'] \
             if args.K == 5 else [f"class {k}" for k in range(args.K)]
 
-        print("\n----------- held out patients:")
+        print("\n----------- held out patients (3D Dice per patient):")
         for k in range(args.K):
             print(f"{labels[k]:<12}{before[k]:7.4f} -> {after[k]:7.4f}"
                   f"  ({after[k] - before[k]:+.4f})")
