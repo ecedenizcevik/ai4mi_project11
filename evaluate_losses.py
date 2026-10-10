@@ -134,9 +134,39 @@ if __name__ == "__main__":
     for name, path in EXPERIMENTS.items():
         all_results[name] = evaluate(name, path)
 
-    print("\n" + "=" * 65)
-    print("COMPARISON: FOCAL MINUS TVERSKY")
-    print("=" * 65)
+    
+    print("\n" + "=" * 75)
+    print("COMPARISON AGAINST ORIGINAL CE BASELINE")
+    print("=" * 75)
+
+    baseline = all_results["CE Baseline"]
+
+    baseline_mean = np.nanmean([
+        baseline[organ][0] for organ in ORGANS.values()
+    ])
+
+    for name, results in all_results.items():
+        if name == "CE Baseline":
+            continue
+
+        print(f"\n{name} vs CE Baseline")
+
+        for organ in ORGANS.values():
+            ce_dice = baseline[organ][0]
+            model_dice = results[organ][0]
+
+            print(
+                f"{organ:10s} | "
+                f"CE: {ce_dice:.4f} | "
+                f"{name}: {model_dice:.4f} | "
+                f"Difference: {model_dice - ce_dice:+.4f}"
+            )
+
+        model_mean = np.nanmean([
+            results[organ][0] for organ in ORGANS.values()
+        ])
+
+        print(f"Mean Dice improvement: {model_mean - baseline_mean:+.4f}")
 
     for organ in ORGANS.values():
         tversky = all_results["Tversky"][organ][0]
