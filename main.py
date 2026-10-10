@@ -66,6 +66,7 @@ datasets_params: dict[str, dict[str, Any]] = {}
 datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+datasets_params["SEGTHOR_MEDIASTINAL"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 
 def img_transform(img, pixel_spacing_mm=None):
         ## Default preprocessing
@@ -81,20 +82,20 @@ def img_transform(img, pixel_spacing_mm=None):
         img = clahe.apply(img)
 
         # Denoising
-        img = cv.fastNlMeansDenoising(img, None, 5, 7, 21)
+        #img = cv.fastNlMeansDenoising(img, None, 5, 7, 21)
         # Edge sharpening
-        sharpen_kernel = np.array([[0, -1, 0],
-                        [-1, 5, -1],
-                        [0, -1, 0]], dtype=np.float32)
-        img = cv.filter2D(img, -1, sharpen_kernel)
+        #sharpen_kernel = np.array([[0, -1, 0],
+         #               [-1, 5, -1],
+          #              [0, -1, 0]], dtype=np.float32)
+        #img = cv.filter2D(img, -1, sharpen_kernel)
         # Opening
-        morph_kernel = np.ones((3, 3), dtype=np.uint8)
-        img = cv.morphologyEx(img, cv.MORPH_OPEN, morph_kernel)
+        #morph_kernel = np.ones((3, 3), dtype=np.uint8)
+        #img = cv.morphologyEx(img, cv.MORPH_OPEN, morph_kernel)
 
         # Pixel space normalization
-        if pixel_spacing_mm is None:
-            pixel_spacing_mm = (1.0, 1.0)
-        img = normalize_inplane_fov([img], pixel_spacing_mm[:2])[0]
+        #if pixel_spacing_mm is None:
+        #    pixel_spacing_mm = (1.0, 1.0)
+        #img = normalize_inplane_fov([img], pixel_spacing_mm[:2])[0]
 
         # Per-slice z-score normalization
         img = img.astype(np.float32)
