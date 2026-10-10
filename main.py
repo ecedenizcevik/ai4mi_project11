@@ -62,7 +62,7 @@ from utils import (Dcm,
                    cldice,
                    save_images)
 
-from losses import CrossEntropy, GeneralizedDiceLoss, CrossEntropyDice
+from losses import CrossEntropy, GeneralizedDiceLoss, CrossEntropyDice, TverskyLoss, FocalLoss, CrossEntropyTversky
 from pixel_space_norm import normalize_inplane_fov
 
 METRIC_SPACING_MM = (500 / 256, 500 / 256)
@@ -240,6 +240,32 @@ def runTraining(args):
                 dice_idk=list(range(1, K))
             )
 
+        elif args.loss == "tversky":
+            loss_fn = TverskyLoss(
+                idk=list(range(1, K)),
+                alpha=0.3,
+                beta=0.7
+            )
+
+        elif args.loss == "focal":
+            loss_fn = FocalLoss(
+                idk=list(range(K)),
+                gamma=2.0
+            )
+
+        elif args.loss == "ce_tversky":
+            loss_fn = CrossEntropyTversky(
+                ce_idk=list(range(K)),
+                tversky_idk=list(range(1, K)),
+                alpha=0.3,
+                beta=0.7,
+                ce_weight=0.5,
+                tversky_weight=0.5
+            )
+
+        else:
+            raise ValueError(f"Unknown loss function: {args.loss}")
+
     elif args.mode in ["partial"] and args.dataset == 'SEGTHOR':
         loss_fn = CrossEntropy(
             idk=[0, 1, 3, 4]
@@ -401,11 +427,18 @@ def main():
     parser.add_argument('--seed', default=0, type=int) 
 
     parser.add_argument(
-     '--loss',
-     default='ce',
-     choices=['ce', 'generalized_dice', 'ce_dice'],
-     help='Loss function for full supervision.'
- )
+        '--loss',
+        default='ce',
+        choices=[
+            'ce',
+            'generalized_dice',
+            'ce_dice',
+            'tversky',
+            'focal',
+            'ce_tversky',
+        ],
+        help='Loss function for full supervision.'
+    )
 
     args = parser.parse_args()
 
