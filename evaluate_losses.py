@@ -8,8 +8,11 @@ from PIL import Image
 ROOT = Path("results")
 
 EXPERIMENTS = {
+    "CE Baseline": ROOT / "ece_ce_20epochs",
+    "CE + Dice": ROOT / "ece_ce_dice_20epochs",
     "Tversky": ROOT / "ece_tversky_20epochs",
     "Focal": ROOT / "ece_focal_20epochs",
+    "CE + Tversky": ROOT / "ece_ce_tversky_20epochs",
 }
 
 GT_DIR = Path("data/SEGTHOR_FULL/val/gt")
