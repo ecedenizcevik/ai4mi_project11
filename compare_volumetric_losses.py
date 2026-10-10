@@ -14,7 +14,7 @@ RESULTS_DIR = Path("results")
 OUTPUT_DIR = RESULTS_DIR / "volumetric_comparison"
 
 EXPERIMENTS = {
-    "CE": "ece_ce_20epochs",
+    "CE": "ece_ce_h100_20epochs",
     "CE + Dice": "ece_ce_dice_20epochs",
     "Tversky": "ece_tversky_20epochs",
     "Focal": "ece_focal_20epochs",
