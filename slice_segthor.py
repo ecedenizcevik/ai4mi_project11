@@ -51,6 +51,12 @@ def norm_arr(img: np.ndarray) -> np.ndarray:
     return res.astype(np.uint8)
 
 
+WINDOWS = {"wide": (-1000, 300), "mediastinal": (-160, 240)}
+def window_arr(img: np.ndarray, lo: int, hi: int) -> np.ndarray:
+    img = np.clip(img.astype(np.float32), lo, hi)
+    return (255 * (img - lo) / (hi - lo)).astype(np.uint8)
+
+
 def sanity_ct(ct, x, y, z, dx, dy, dz) -> bool:
     assert ct.dtype in [np.int16, np.int32], ct.dtype
     assert -1000 <= ct.min(), ct.min()
@@ -81,7 +87,7 @@ resize_: Callable = partial(resize, mode="constant", preserve_range=True, anti_a
 
 
 def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int, int],
-                  test_mode: bool = False, target_fov: float | None = None) -> tuple[float, float, float]:
+                  test_mode: bool = False, window: str = "none", target_fov: float | None = None) -> tuple[float, float, float]:
     id_path: Path = source_path / ("train" if not test_mode else "test") / id_
 
     ct_path: Path = (id_path / f"{id_}.nii.gz") if not test_mode else (source_path / "test" / f"{id_}.nii.gz")
@@ -107,8 +113,8 @@ def slice_patient(id_: str, dest_path: Path, source_path: Path, shape: tuple[int
         size = fov_target_size(dx, target_fov)
         ct = center_crop_or_pad(ct, (size, size), pad_value=-1000)
         gt = center_crop_or_pad(gt, (size, size), pad_value=0)
-    
-    norm_ct: np.ndarray = norm_arr(ct)
+
+    norm_ct: np.ndarray = norm_arr(ct) if window == "none" else window_arr(ct, *WINDOWS[window])
 
     to_slice_ct = norm_ct
     to_slice_gt = gt
@@ -185,6 +191,7 @@ def main(args: argparse.Namespace):
                                  dest_path=dest_mode,
                                  source_path=src_path,
                                  shape=tuple(args.shape),
+                                 window=args.window,
                                  test_mode=mode == 'test',
                                  target_fov=args.target_fov)
         
@@ -219,6 +226,7 @@ def get_args() -> argparse.Namespace:
                         help="The number of cores to use for processing")
     parser.add_argument('--target_fov', type=float, default=None,
                         help="Normalise in-plane FoV to this many mm (e.g. 500). Off by default.")
+    parser.add_argument('--window', default="none", choices=["none", *WINDOWS.keys()])
     args = parser.parse_args()
     random.seed(args.seed)
 

@@ -71,6 +71,9 @@ datasets_params: dict[str, dict[str, Any]] = {}
 # Avoids the classes with C (often used for the number of Channel)
 datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_FULL"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+datasets_params["SEGTHOR_MED"] = datasets_params["SEGTHOR"]
+datasets_params["SEGTHOR_WIDE"] = datasets_params["SEGTHOR"]
 datasets_params["SEGTHOR_FULL_FOV"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["TOTALSEG"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 
@@ -138,8 +141,12 @@ def gt_transform(K, img):
 
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     # Networks and scheduler
-    gpu: bool = args.gpu and torch.cuda.is_available()
-    device = torch.device("cuda") if gpu else torch.device("cpu")
+    if args.gpu and torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif args.gpu and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print(f">> Picked {device} to run experiments")
 
     params: dict[str, Any] = datasets_params[args.dataset]
