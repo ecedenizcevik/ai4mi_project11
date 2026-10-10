@@ -49,5 +49,20 @@ data/SEGTHOR_FULL:
 	$(info $(green)python $(CFLAGS) slice_segthor.py$(reset))
 	rm -rf $@_tmp $@
 	python $(CFLAGS) slice_segthor.py --source_dir data/segthor_train_full --dest_dir $@_tmp \
-		--shape 256 256 --retain 5
+		--shape 256 256 --retain 8
+	mv $@_tmp $@
+
+data/SEGTHOR_FULL_CROPPED:
+	$(info $(green)python $(CFLAGS) slice_segthor_crop.py$(reset))
+	rm -rf $@_tmp $@
+	python $(CFLAGS) slice_segthor_crop.py --source_dir data/segthor_train_full --dest_dir $@_tmp \
+		--shape 256 256 --retain 8
+	mv $@_tmp $@
+
+
+data/SEGTHOR_FULL_RM_BG:
+	$(info $(green)python $(CFLAGS) slice_segthor_rm_bg.py$(reset))
+	rm -rf $@_tmp $@
+	python $(CFLAGS) slice_segthor_rm_bg.py --source_dir data/segthor_train_full --dest_dir $@_tmp \
+		--shape 256 256 --retain 8
 	mv $@_tmp $@
