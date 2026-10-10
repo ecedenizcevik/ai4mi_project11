@@ -63,7 +63,6 @@ from utils import (Dcm,
                    save_images)
 
 from losses import CrossEntropy, GeneralizedDiceLoss, CrossEntropyDice
-from pixel_space_norm import normalize_inplane_fov
 
 METRIC_SPACING_MM = (500 / 256, 500 / 256)
 
@@ -71,8 +70,8 @@ datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
 # Avoids the classes with C (often used for the number of Channel)
 datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'factor': 2}
-datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
-datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+datasets_params["SEGTHOR_FULL"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+datasets_params["SEGTHOR_FULL_FOV"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["TOTALSEG"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 
 # Architectures, decoupled from the dataset: --model overrides the dataset default. The per-dataset
@@ -113,9 +112,7 @@ def img_transform(img, pixel_spacing_mm=None):
         img = cv.morphologyEx(img, cv.MORPH_OPEN, morph_kernel)
 
         # Pixel space normalization
-        if pixel_spacing_mm is None:
-            pixel_spacing_mm = (1.0, 1.0)
-        img = normalize_inplane_fov([img], pixel_spacing_mm[:2])[0]
+        
 
         # Per-slice z-score normalization
         img = img.astype(np.float32)
