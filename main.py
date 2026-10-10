@@ -22,6 +22,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import sys
 import argparse
 import warnings
 from typing import Any
@@ -36,7 +37,7 @@ import numpy as np
 import torch.nn.functional as F
 from torch import nn, Tensor
 from torchvision import transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import BatchSampler, DataLoader, Sampler
 
 from functools import partial 
 
@@ -58,6 +59,13 @@ from utils import (Dcm,
 from losses import (CrossEntropy, TverskyLoss)
 
 METRIC_SPACING_MM = (500 / 256, 500 / 256)
+
+index_pools = {
+    "background": 0,                    # Background
+    "large-organ foreground": 2,        # Heart
+    "medium-organ foreground": 4,       # Aorta 
+    "small-organ foreground": {1, 3}    # Esophagus, Trachea
+}
 
 models = {
     "ENet": ENet,
@@ -109,6 +117,103 @@ def gt_transform(K, img, img_size=None):
         img = class2one_hot(img, K=K)
         return img[0]
 
+class ForegroundOversamplingBatchSampler(Sampler[list[int]]):
+    """Yield batches with foreground and small-organ slices.
+        1/6 of the slices in the batch contain small-organ slices,
+        1/3 of the slices contain other foreground slices,
+        1/2 of the slices contain background slices """
+
+    def __init__(self, dataset: SliceDataset, batch_size: int,
+                 oversample_foreground_percent: float = 1 / 3,
+                 oversample_small_organ_percent: float = 0.0,
+                 drop_last: bool = False):
+        if not 0 <= oversample_foreground_percent <= 1:
+            raise ValueError("oversample_foreground_percent must be in [0, 1]")
+        if not 0 <= oversample_small_organ_percent <= oversample_foreground_percent:
+            raise ValueError(
+                "oversample_small_organ_percent must be in "
+                "[0, oversample_foreground_percent]"
+            )
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.oversample_foreground_percent = oversample_foreground_percent
+        self.oversample_small_organ_percent = oversample_small_organ_percent
+        self.foreground_indices: list[int] = []
+        self.background_indices: list[int] = []
+        self.small_organ_indices: list[int] = []
+
+        for index, (_, gt_path) in enumerate(dataset.files):
+            if gt_path is None:
+                raise ValueError("Foreground oversampling requires ground-truth labels")
+            with Image.open(gt_path) as gt:
+                labels = np.asarray(gt)
+                if np.any(labels > 0):
+                    self.foreground_indices.append(index)
+                    # SEGTHOR labels use 0, 63, 126, 189, and 252.
+                    class_ids = labels // 63 if labels.max(initial=0) > 4 else labels
+                    if np.isin(class_ids, list(index_pools["small-organ foreground"])).any():
+                        self.small_organ_indices.append(index)
+                else:
+                    self.background_indices.append(index)
+
+        if not self.foreground_indices:
+            raise ValueError("The dataset contains no foreground slices")
+        if oversample_small_organ_percent > 0 and not self.small_organ_indices:
+            raise ValueError("The dataset contains no small-organ slices")
+
+    def __len__(self) -> int:
+        dataset_size = len(self.foreground_indices) + len(self.background_indices)
+        if self.drop_last:
+            return dataset_size // self.batch_size
+        return (dataset_size + self.batch_size - 1) // self.batch_size
+
+    @staticmethod
+    def _draw(indices: list[int], count: int) -> Tensor:
+        if count == 0:
+            return torch.empty(0, dtype=torch.long)
+        source = torch.tensor(indices, dtype=torch.long)
+        if count <= len(source):
+            return source[torch.randperm(len(source))[:count]]
+        return source[torch.randint(len(source), (count,))]
+
+    def __iter__(self):
+        for _ in range(len(self)):
+            foreground_count = min(
+                round(self.batch_size * self.oversample_foreground_percent),
+                self.batch_size,
+            )
+            small_organ_count = min(
+                round(self.batch_size * self.oversample_small_organ_percent),
+                foreground_count,
+            )
+            background_count = self.batch_size - foreground_count
+
+            # If every slice is foreground, use it as the fallback pool.
+            background_pool = self.background_indices or self.foreground_indices
+            small_organs = self._draw(self.small_organ_indices, small_organ_count)
+            foreground = self._draw(
+                self.foreground_indices,
+                foreground_count - small_organ_count,
+            )
+            background = self._draw(background_pool, background_count)
+            batch = torch.cat((small_organs, foreground, background))
+            batch = batch[torch.randperm(len(batch))]
+            yield batch.tolist()
+
+
+def set_batch_size_and_oversample(dataset: SliceDataset, batch_size: int,
+                                  oversample_foreground_percent: float,
+                                  oversample_small_organ_percent: float = 0.0) -> BatchSampler:
+    return ForegroundOversamplingBatchSampler(
+        dataset,
+        batch_size=batch_size,
+        oversample_foreground_percent=oversample_foreground_percent,
+        oversample_small_organ_percent=oversample_small_organ_percent,
+    )
+
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     # Networks and scheduler
     gpu: bool = args.gpu and torch.cuda.is_available()
@@ -142,21 +247,41 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
 
     # Dataset part
-    B: int = datasets_params[args.dataset]['B']
+    B: int = args.batch_size if getattr(args, 'batch_size', None) is not None else datasets_params[args.dataset]['B']
+    args.batch_size = B
     root_dir = Path("data") / args.dataset
 
     swin_img_size = 224 if args.model == "SwinUnet" else None
-
 
     train_set = SliceDataset('train',
                             root_dir,
                             img_transform=partial(img_transform, img_size=swin_img_size),
                             gt_transform=partial(gt_transform, K, img_size=swin_img_size),
                             debug=args.debug)
-    train_loader = DataLoader(train_set,
-                              batch_size=B,
-                              num_workers=5,
-                              shuffle=True)
+
+    is_oversampling = (
+        getattr(args, 'oversampling', False)
+        or getattr(args, 'oversample', False)
+        or (getattr(args, 'oversample_small_organ_percent', 0.0) > 0)
+    )
+    args.oversampling = is_oversampling
+    args.oversample = is_oversampling
+
+    if is_oversampling:
+        train_batch_sampler = set_batch_size_and_oversample(
+            train_set,
+            B,
+            args.oversample_foreground_percent,
+            args.oversample_small_organ_percent,
+        )
+        train_loader = DataLoader(train_set,
+                                  batch_sampler=train_batch_sampler,
+                                  num_workers=5)
+    else:
+        train_loader = DataLoader(train_set,
+                                  batch_size=B,
+                                  num_workers=5,
+                                  shuffle=True)
 
     val_set = SliceDataset('val',
                            root_dir,
@@ -202,7 +327,8 @@ def runTraining(args):
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((args.epochs, len(train_loader)))
-    log_dice_tra: Tensor = torch.zeros((args.epochs, len(train_loader.dataset), K))
+    num_tra_samples: int = (len(train_loader) * args.batch_size) if getattr(args, 'oversampling', False) else len(train_loader.dataset)
+    log_dice_tra: Tensor = torch.zeros((args.epochs, num_tra_samples, K))
     log_loss_val: Tensor = torch.zeros((args.epochs, len(val_loader)))
     log_dice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
     log_nsd_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
@@ -418,11 +544,26 @@ def main():
 
     parser.add_argument('--metric_every', default=5, type=int,
                         help="Compute the slow metrics (NSD and clDice) every N epochs. ")
+    parser.add_argument('--oversampling', '--oversample', action='store_true', dest='oversampling',
+                        help="Enable the foreground/small-organ oversampling strategy from main_oversampling.py.")
+    parser.add_argument('--oversample_foreground_percent', default=1 / 3, type=float,
+                        help="Fraction of each training batch forced to contain foreground "
+                             "(nnU-Net default: 1/3).")
+    parser.add_argument('--oversample_small_organ_percent', default=0.0, type=float,
+                        help="Fraction of each batch reserved for slices containing "
+                             "small-organ classes 1 or 3. This is part of, not in "
+                             "addition to, the foreground fraction.")
+    parser.add_argument('--batch_size', default=None, type=int,
+                        help="Batch size (defaults to dataset config if not specified).")
     parser.add_argument('--loss', default='ce', choices=['ce', 'tversky'],
                         help="Loss function to use for training.")
     parser.add_argument('--alpha', default=0.3, type=float,
                         help="Weight for false positives in Tversky loss (beta = 1 - alpha).")
     args = parser.parse_args()
+
+    if args.oversample_small_organ_percent > 0 or any(arg.startswith('--oversample_foreground_percent') for arg in sys.argv):
+        args.oversampling = True
+    args.oversample = args.oversampling
 
     pprint(args)
 
