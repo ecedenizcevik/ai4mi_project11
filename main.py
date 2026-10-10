@@ -22,6 +22,7 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import sys
 import argparse
 import warnings
 from typing import Any
@@ -29,6 +30,7 @@ from pathlib import Path
 from pprint import pprint
 from operator import itemgetter
 from shutil import copytree, rmtree
+from PIL import Image
 
 import torch
 import numpy as np
@@ -37,7 +39,7 @@ from scipy.ndimage import gaussian_filter
 import torch.nn.functional as F
 from torch import nn, Tensor
 from torchvision import transforms
-from torch.utils.data import DataLoader
+from torch.utils.data import BatchSampler, DataLoader, Sampler
 from scipy.ndimage import gaussian_filter
 
 from functools import partial 
@@ -66,11 +68,21 @@ from losses import CrossEntropy, GeneralizedDiceLoss, CrossEntropyDice, TverskyL
 
 METRIC_SPACING_MM = (500 / 256, 500 / 256)
 
+index_pools = {
+    "background": 0,                    # Background
+    "large-organ foreground": 2,        # Heart
+    "medium-organ foreground": 4,       # Aorta 
+    "small-organ foreground": {1, 3}    # Esophagus, Trachea
+}
+
 datasets_params: dict[str, dict[str, Any]] = {}
 # K for the number of classes
 # Avoids the classes with C (often used for the number of Channel)
+# A lot of different SEGTHOR variants, kept it since other teammembers might have their SEGTHOR under different names.
 datasets_params["TOY2"] = {'K': 2, 'net': shallowCNN, 'B': 2, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_FULL"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+datasets_params["SEGTHOR_FULL_CROPPED"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+datasets_params["SEGTHOR_FULL_RM_BG"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["SEGTHOR_MED"] = datasets_params["SEGTHOR"]
@@ -84,20 +96,28 @@ models: dict[str, Any] = {'enet': ENet, 'unet': UNet, 'shallow': shallowCNN, 'vi
 if build_swin_unet is not None:
     models['swin'] = build_swin_unet
 
-def img_transform_original(img, pixel_spacing_mm= None):
+# Function only used in swin_unet, which is not committed within this merge. Kept for backward compatibility.
+def resize_if_needed(img, img_size, resampling):
+    if img_size is not None:
+        img = img.resize((img_size, img_size), resampling)
+    return img
+
+def img_transform_original(img, pixel_spacing_mm= None, img_size=None):
         img = img.convert('L')
+        img = resize_if_needed(img, img_size, resampling=Image.BILINEAR) # For Swin-Unet
         img = np.array(img)[np.newaxis, ...]
         img = img / 255  # max <= 1
         img = torch.tensor(img, dtype=torch.float32)
         return img
 
-def img_transform(img, pixel_spacing_mm=None):
+def img_transform(img, pixel_spacing_mm=None, img_size=None):
         ## Default preprocessing
         # img = img.convert('L')
         # img = np.array(img)[np.newaxis, ...]
         # img = img / 255  # max <= 1
-
+        img = resize_if_needed(img, img_size, Image.Resampling.BILINEAR) # For Swin-Unet
         img = np.array(img.convert('L'), dtype=np.uint8)
+
 
         ## Preprocessing
         # CLAHE
@@ -129,7 +149,8 @@ def img_transform(img, pixel_spacing_mm=None):
 img_transforms: dict[str, Any] = {'clean': img_transform,
                                   'original': img_transform_original}
 
-def gt_transform(K, img):
+def gt_transform(K, img, img_size=None):
+        img = resize_if_needed(img, img_size, Image.Resampling.NEAREST)
         img = np.array(img)[...]
         # The idea is that the classes are mapped to {0, 255} for binary cases
         # {0, 85, 170, 255} for 4 classes
@@ -139,6 +160,103 @@ def gt_transform(K, img):
         img = torch.tensor(img, dtype=torch.int64)[None, ...]  # Add one dimension to simulate batch
         img = class2one_hot(img, K=K)
         return img[0]
+
+class ForegroundOversamplingBatchSampler(Sampler[list[int]]):
+    """Yield batches with foreground and small-organ slices.
+        1/6 of the slices in the batch contain small-organ slices,
+        1/3 of the slices contain other foreground slices,
+        1/2 of the slices contain background slices """
+
+    def __init__(self, dataset: SliceDataset, batch_size: int,
+                 oversample_foreground_percent: float = 1 / 3,
+                 oversample_small_organ_percent: float = 0.0,
+                 drop_last: bool = False):
+        if not 0 <= oversample_foreground_percent <= 1:
+            raise ValueError("oversample_foreground_percent must be in [0, 1]")
+        if not 0 <= oversample_small_organ_percent <= oversample_foreground_percent:
+            raise ValueError(
+                "oversample_small_organ_percent must be in "
+                "[0, oversample_foreground_percent]"
+            )
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+
+        self.batch_size = batch_size
+        self.drop_last = drop_last
+        self.oversample_foreground_percent = oversample_foreground_percent
+        self.oversample_small_organ_percent = oversample_small_organ_percent
+        self.foreground_indices: list[int] = []
+        self.background_indices: list[int] = []
+        self.small_organ_indices: list[int] = []
+
+        for index, (_, gt_path) in enumerate(dataset.files):
+            if gt_path is None:
+                raise ValueError("Foreground oversampling requires ground-truth labels")
+            with Image.open(gt_path) as gt:
+                labels = np.asarray(gt)
+                if np.any(labels > 0):
+                    self.foreground_indices.append(index)
+                    # SEGTHOR labels use 0, 63, 126, 189, and 252.
+                    class_ids = labels // 63 if labels.max(initial=0) > 4 else labels
+                    if np.isin(class_ids, list(index_pools["small-organ foreground"])).any():
+                        self.small_organ_indices.append(index)
+                else:
+                    self.background_indices.append(index)
+
+        if not self.foreground_indices:
+            raise ValueError("The dataset contains no foreground slices")
+        if oversample_small_organ_percent > 0 and not self.small_organ_indices:
+            raise ValueError("The dataset contains no small-organ slices")
+
+    def __len__(self) -> int:
+        dataset_size = len(self.foreground_indices) + len(self.background_indices)
+        if self.drop_last:
+            return dataset_size // self.batch_size
+        return (dataset_size + self.batch_size - 1) // self.batch_size
+
+    @staticmethod
+    def _draw(indices: list[int], count: int) -> Tensor:
+        if count == 0:
+            return torch.empty(0, dtype=torch.long)
+        source = torch.tensor(indices, dtype=torch.long)
+        if count <= len(source):
+            return source[torch.randperm(len(source))[:count]]
+        return source[torch.randint(len(source), (count,))]
+
+    def __iter__(self):
+        for _ in range(len(self)):
+            foreground_count = min(
+                round(self.batch_size * self.oversample_foreground_percent),
+                self.batch_size,
+            )
+            small_organ_count = min(
+                round(self.batch_size * self.oversample_small_organ_percent),
+                foreground_count,
+            )
+            background_count = self.batch_size - foreground_count
+
+            # If every slice is foreground, use it as the fallback pool.
+            background_pool = self.background_indices or self.foreground_indices
+            small_organs = self._draw(self.small_organ_indices, small_organ_count)
+            foreground = self._draw(
+                self.foreground_indices,
+                foreground_count - small_organ_count,
+            )
+            background = self._draw(background_pool, background_count)
+            batch = torch.cat((small_organs, foreground, background))
+            batch = batch[torch.randperm(len(batch))]
+            yield batch.tolist()
+
+
+def set_batch_size_and_oversample(dataset: SliceDataset, batch_size: int,
+                                  oversample_foreground_percent: float,
+                                  oversample_small_organ_percent: float = 0.0) -> BatchSampler:
+    return ForegroundOversamplingBatchSampler(
+        dataset,
+        batch_size=batch_size,
+        oversample_foreground_percent=oversample_foreground_percent,
+        oversample_small_organ_percent=oversample_small_organ_percent,
+    )
 
 def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     # Networks and scheduler
@@ -163,7 +281,7 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
         # Factory function with its own signature; ignores in_channels/kernels/factor
         # and loads its own pretrained checkpoint.
         assert in_channels == 1, "Swin-Unet expects a single input channel"
-        net = build_swin_unet(num_classes=K, checkpoint=Path(args.swin_checkpoint), img_size=256)
+        net = build_swin_unet(num_classes=K, checkpoint=Path(args.swin_checkpoint), img_size=224)
     else:
         net = net_class(in_channels, K, kernels=kernels, factor=factor)
         net.init_weights()
@@ -179,30 +297,41 @@ def setup(args) -> tuple[nn.Module, Any, Any, DataLoader, DataLoader, int]:
     optimizer = torch.optim.Adam(net.parameters(), lr=lr, betas=(0.9, 0.999))
 
     # Dataset part
-    B: int = datasets_params[args.dataset]['B']
+    B: int = args.batch_size if getattr(args, 'batch_size', None) is not None else datasets_params[args.dataset]['B']
+    args.batch_size = B
     root_dir = Path("data") / args.dataset
+
+    swin_img_size = 224 if args.model == "swin" else None
 
     transform_fn = img_transforms[args.img_transform]
     print(f">> Using '{args.img_transform}' image preprocessing")
 
     train_set = SliceDataset('train',
                              root_dir,
-                             img_transform=transform_fn,
-                             gt_transform= partial(gt_transform, K),
+                             img_transform=partial(transform_fn, img_size=swin_img_size),
+                             gt_transform= partial(gt_transform, K, img_size=swin_img_size),
                              debug=args.debug,
                              neighbours=args.neighbours,
                              coords=args.coords,
                              fourier_freqs=args.fourier_freqs)
 
-    train_loader = DataLoader(train_set,
-                              batch_size=B,
-                              num_workers=5,
-                              shuffle=True)
+    if args.oversampling:
+        train_loader = DataLoader(train_set,
+                                  batch_sampler=set_batch_size_and_oversample(
+                                      train_set, B,
+                                      args.oversample_foreground_percent,
+                                      args.oversample_small_organ_percent),
+                                  num_workers=5)
+    else:
+        train_loader = DataLoader(train_set,
+                                batch_size=B,
+                                num_workers=5,
+                                shuffle=True)
 
     val_set = SliceDataset('val',
                            root_dir,
-                           img_transform=transform_fn,
-                           gt_transform=partial(gt_transform, K),
+                           img_transform=partial(transform_fn, img_size=swin_img_size),
+                           gt_transform=partial(gt_transform, K, img_size=swin_img_size),
                            debug=args.debug,
                            neighbours=args.neighbours,
                            coords=args.coords,
@@ -229,6 +358,7 @@ def runTraining(args):
     net, optimizer, device, train_loader, val_loader, K = setup(args)
 
     if args.mode == "full":
+
         if args.loss == "ce":
             loss_fn = CrossEntropy(
                 idk=list(range(K))
@@ -248,8 +378,8 @@ def runTraining(args):
         elif args.loss == "tversky":
             loss_fn = TverskyLoss(
                 idk=list(range(1, K)),
-                alpha=0.3,
-                beta=0.7
+                alpha=args.alpha,
+                beta=1.0 - args.alpha,
             )
 
         elif args.loss == "focal":
@@ -262,8 +392,8 @@ def runTraining(args):
             loss_fn = CrossEntropyTversky(
                 ce_idk=list(range(K)),
                 tversky_idk=list(range(1, K)),
-                alpha=0.3,
-                beta=0.7,
+                alpha=args.alpha,
+                beta=1.0 - args.alpha,
                 ce_weight=0.5,
                 tversky_weight=0.5
             )
@@ -281,13 +411,15 @@ def runTraining(args):
 
     # Notice one has the length of the _loader_, and the other one of the _dataset_
     log_loss_tra: Tensor = torch.zeros((args.epochs, len(train_loader)))
-    log_dice_tra: Tensor = torch.zeros((args.epochs, len(train_loader.dataset), K))
+    num_tra_samples: int = (len(train_loader) * args.batch_size) if getattr(args, 'oversampling', False) else len(train_loader.dataset)
+    log_dice_tra: Tensor = torch.zeros((args.epochs, num_tra_samples, K))
     log_loss_val: Tensor = torch.zeros((args.epochs, len(val_loader)))
     log_dice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
     log_nsd_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
     log_cldice_val: Tensor = torch.zeros((args.epochs, len(val_loader.dataset), K))
 
     best_dice: float = 0
+    best_epoch: int = -1
 
     for e in range(args.epochs):
         # NSD and clDice are slow so we do it every N epochs.
@@ -379,6 +511,7 @@ def runTraining(args):
             message = f">>> Improved dice at epoch {e}: {best_dice:05.3f}->{current_dice:05.3f} DSC"
             print(message)
             best_dice = current_dice
+            best_epoch = e
             with open(args.dest / "best_epoch.txt", 'w') as f:
                 f.write(message)
 
@@ -389,7 +522,87 @@ def runTraining(args):
 
             torch.save(net, args.dest / "bestmodel.pkl")
             torch.save(net.state_dict(), args.dest / "bestweights.pt")
+    # Ensure NSD and clDice are available for the best epoch even if it was not a slow_metrics epoch
+    best_slow_computed: bool = args.metric_every > 0 and (
+        (best_epoch % args.metric_every == 0) or (best_epoch == args.epochs - 1)
+    )
+    if args.metric_every > 0 and not best_slow_computed and (args.dest / "bestweights.pt").exists():
+        print(f"\n>>> Computing NSD and clDice for best epoch ({best_epoch})...")
+        net.load_state_dict(torch.load(args.dest / "bestweights.pt", map_location=device))
+        net.eval()
+        with torch.no_grad():
+            j = 0
+            for data in val_loader:
+                img = data['images'].to(device)
+                gt = data['gts'].to(device)
+                B = img.shape[0]
+                pred_logits = net(img)
+                pred_probs = F.softmax(1 * pred_logits, dim=1)
+                pred_seg = probs2one_hot(pred_probs)
+                log_nsd_val[best_epoch, j:j + B, :] = nsd_score(pred_seg, gt, METRIC_SPACING_MM)
+                log_cldice_val[best_epoch, j:j + B, :] = cldice(pred_seg, gt)
+                j += B
+        np.save(args.dest / "nsd_val.npy", log_nsd_val)
+        np.save(args.dest / "cldice_val.npy", log_cldice_val)
 
+    class_names = {
+        0: "0 (Background)",
+        1: "1 (Esophagus)",
+        2: "2 (Heart)",
+        3: "3 (Trachea)",
+        4: "4 (Aorta)",
+    } if K == 5 else {0: "0 (Background)", **{k: f"Class {k}" for k in range(1, K)}}
+
+    sep = "=" * 78
+    row_sep = "-" * 20 + "+" + "-" * 12 + "+" + "-" * 12 + "+" + "-" * 12 + "+" + "-" * 12
+    table_lines = [
+        sep,
+        f"{f'Best Epoch Metrics (Epoch {best_epoch})':^78}",
+        sep,
+        f"{'Class':<20}|{'Val Dice':>12}|{'Val NSD':>12}|{'Val clDice':>12}|{'Train Dice':>12}",
+        row_sep,
+    ]
+    for k in range(K):
+        c_name = class_names.get(k, f"Class {k}")
+        v_dice = log_dice_val[best_epoch, :, k].mean().item()
+        v_nsd = log_nsd_val[best_epoch, :, k].mean().item()
+        v_cldice = log_cldice_val[best_epoch, :, k].mean().item()
+        t_dice = log_dice_tra[best_epoch, :, k].mean().item()
+        table_lines.append(
+            f"{c_name:<20}|{v_dice:>12.3f}|{v_nsd:>12.3f}|{v_cldice:>12.3f}|{t_dice:>12.3f}"
+        )
+
+    table_lines.append(row_sep)
+    fg_label = f"Mean (FG 1..{K - 1})" if K > 2 else "Mean (FG 1)"
+    table_lines.append(
+        f"{fg_label:<20}|"
+        f"{log_dice_val[best_epoch, :, 1:].mean().item():>12.3f}|"
+        f"{log_nsd_val[best_epoch, :, 1:].mean().item():>12.3f}|"
+        f"{log_cldice_val[best_epoch, :, 1:].mean().item():>12.3f}|"
+        f"{log_dice_tra[best_epoch, :, 1:].mean().item():>12.3f}"
+    )
+    table_lines.append(
+        f"{f'Mean (All 0..{K - 1})':<20}|"
+        f"{log_dice_val[best_epoch, :, :].mean().item():>12.3f}|"
+        f"{log_nsd_val[best_epoch, :, :].mean().item():>12.3f}|"
+        f"{log_cldice_val[best_epoch, :, :].mean().item():>12.3f}|"
+        f"{log_dice_tra[best_epoch, :, :].mean().item():>12.3f}"
+    )
+    table_lines.append(row_sep)
+    val_loss_best = log_loss_val[best_epoch].mean().item()
+    tra_loss_best = log_loss_tra[best_epoch].mean().item()
+    table_lines.append(
+        f"{'Loss':<20}|  Val: {val_loss_best:<18.2e}|  Train: {tra_loss_best:<18.2e}"
+    )
+    table_lines.append(sep)
+    table_str = "\n".join(table_lines)
+
+    print("\n Training finished. ")
+    print(f"\n Best dice: {best_dice}")
+    print(f"\n{table_str}")
+
+    with open(args.dest / "best_epoch.txt", 'a') as f:
+        f.write(f"\n\n{table_str}\n")
     print("\n Training finished. ")
     print(f"\n Best dice: {best_dice}")
 
@@ -430,7 +643,19 @@ def main():
     parser.add_argument('--metric_every', default=5, type=int,
                         help="Compute the slow metrics (NSD and clDice) every N epochs. ")
     parser.add_argument('--seed', default=0, type=int) 
-
+    parser.add_argument('--oversampling', '--oversample', action='store_true', dest='oversampling',
+                        help="Enable the foreground/small-organ oversampling strategy from main_oversampling.py.")
+    parser.add_argument('--oversample_foreground_percent', default=1 / 3, type=float,
+                        help="Fraction of each training batch forced to contain foreground "
+                             "(nnU-Net default: 1/3).")
+    parser.add_argument('--oversample_small_organ_percent', default=0.0, type=float,
+                        help="Fraction of each batch reserved for slices containing "
+                             "small-organ classes 1 or 3. This is part of, not in "
+                             "addition to, the foreground fraction.")
+    parser.add_argument('--batch_size', default=None, type=int,
+                        help="Batch size (defaults to dataset config if not specified).")
+    parser.add_argument('--alpha', default=0.3, type=float,
+                        help="Weight for false positives in Tversky loss (beta = 1 - alpha).")
     parser.add_argument(
         '--loss',
         default='ce',
@@ -446,6 +671,10 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.oversample_small_organ_percent > 0 or any(arg.startswith('--oversample_foreground_percent') for arg in sys.argv):
+        args.oversampling = True
+    args.oversample = args.oversampling
 
     pprint(args)
 
