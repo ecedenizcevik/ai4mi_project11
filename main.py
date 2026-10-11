@@ -88,6 +88,8 @@ datasets_params["SEGTHOR_CLEAN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, '
 datasets_params["SEGTHOR_MED"] = datasets_params["SEGTHOR"]
 datasets_params["SEGTHOR_WIDE"] = datasets_params["SEGTHOR"]
 datasets_params["SEGTHOR_FULL_FOV"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+datasets_params["SEGTHOR_FULL_WIN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
+datasets_params["SEGTHOR_FULL_FOV_WIN"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 datasets_params["TOTALSEG"] = {'K': 5, 'net': ENet, 'B': 8, 'kernels': 8, 'factor': 2}
 
 # Architectures, decoupled from the dataset: --model overrides the dataset default. The per-dataset
