@@ -30,3 +30,69 @@ data/SEGTHOR:
 	python $(CFLAGS) slice_segthor.py --source_dir data/segthor_part1 --dest_dir $@_tmp \
 		--shape 256 256 --retain 5
 	mv $@_tmp $@
+
+data/SEGTHOR_CLEAN:
+	$(info $(green)python $(CFLAGS) slice_segthor.py$(reset))
+	rm -rf $@_tmp $@
+	python $(CFLAGS) slice_segthor.py --source_dir data/segthor_part1_cleaned --dest_dir $@_tmp \
+		--shape 256 256 --retain 5
+	mv $@_tmp $@
+
+PROC ?= 8
+
+data/totalseg_part1/.done:
+	$(info $(green)python prepare_totalseg.py$(reset))
+	python prepare_totalseg.py --source_dir data/Totalsegmentator_dataset_small_v201 \
+		--dest_dir $(@D) -p $(PROC)
+	touch $@
+
+data/TOTALSEG: data/totalseg_part1/.done
+	$(info $(green)python -O slice_segthor.py$(reset))
+	rm -rf $@_tmp $@
+	python -O slice_segthor.py --source_dir $(<D) --dest_dir $@_tmp \
+		--shape 256 256 --retain 10
+	mv $@_tmp $@
+
+## Full dataset
+data/segthor_train_full: data/segthor_train_full.zip
+	$(info $(yellow)unzip $<$(reset))
+	rm -rf $@_tmp $@
+	unzip -q $< -d $@_tmp
+	rm -f $@_tmp/.DS_STORE
+	mv $@_tmp $@
+
+SEGTHOR_FULL_SRC ?= data/segthor_train_full
+FULL_RETAIN ?= 10
+
+data/SEGTHOR_FULL: $(SEGTHOR_FULL_SRC)
+	$(info $(green)python $(CFLAGS) slice_segthor.py$(reset))
+	rm -rf $@_tmp $@
+	python $(CFLAGS) slice_segthor.py --source_dir $< --dest_dir $@_tmp \
+		--shape 256 256 --retain $(FULL_RETAIN) -p $(PROC)
+	mv $@_tmp $@
+
+data/SEGTHOR_FULL_FOV: $(SEGTHOR_FULL_SRC)
+	$(info $(green)python $(CFLAGS) slice_segthor.py --target_fov 500$(reset))
+	rm -rf $@_tmp $@
+	python $(CFLAGS) slice_segthor.py --source_dir $< --dest_dir $@_tmp \
+		--shape 256 256 --retain $(FULL_RETAIN) -p $(PROC) --target_fov 500
+	mv $@_tmp $@
+
+## Full dataset + HU windowing + FoV normalisation (500 mm)
+
+WINDOW ?= mediastinal
+
+data/SEGTHOR_FULL_WIN: data/segthor_train_full
+	rm -rf $@_tmp $@
+	python slice_segthor.py --source_dir $< --dest_dir $@_tmp \
+		--shape 256 256 --retain 10 -p 8 \
+		--window $(WINDOW)
+	mv $@_tmp $@
+
+data/SEGTHOR_FULL_FOV_WIN: $(SEGTHOR_FULL_SRC)
+	$(info $(green)python $(CFLAGS) slice_segthor.py --window $(WINDOW) --target_fov 500$(reset))
+	rm -rf $@_tmp $@
+	python $(CFLAGS) slice_segthor.py --source_dir $< --dest_dir $@_tmp \
+		--shape 256 256 --retain $(FULL_RETAIN) -p $(PROC) \
+		--window $(WINDOW) --target_fov 500
+	mv $@_tmp $@

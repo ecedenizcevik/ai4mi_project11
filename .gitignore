@@ -5,5 +5,15 @@ results/
 volumes/
 ai4mi/
 __pycache__/
+.DS_Store
+
+*.pkl
+*.pt
+*.npy
+*.npz
+*.nii.gz
+*.zip
+.venv/
+.DS_Store
 
 projects
